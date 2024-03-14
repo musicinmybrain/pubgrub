@@ -96,7 +96,13 @@ impl ReportFormatter<Package, Range<SemanticVersion>> for CustomReportFormatter 
                     // Exclude the dummy version for root packages
                     format!("{package} depends on {dependency} {dependency_set}")
                 } else {
-                    format!("{package} {package_set} depends on {dependency} {dependency_set}")
+                    #[allow(clippy::collapsible_else_if)]
+                    if matches!(package, Package::Root) {
+                        // Exclude the dummy version for root packages
+                        format!("{package} depends on {dependency} {dependency_set}")
+                    } else {
+                        format!("{package} {package_set} depends on {dependency} {dependency_set}")
+                    }
                 }
             }
         }

@@ -14,9 +14,9 @@ use crate::internal::incompatibility::{IncompId, Incompatibility, Relation};
 use crate::internal::small_map::SmallMap;
 use crate::package::Package;
 use crate::term::Term;
-use crate::type_aliases::SelectedDependencies;
 use crate::version_set::VersionSet;
 
+use super::arena::Id;
 use super::small_vec::SmallVec;
 
 type FnvIndexMap<K, V> = indexmap::IndexMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
@@ -46,10 +46,10 @@ pub struct PartialSolution<P: Package, VS: VersionSet, Priority: Ord + Clone> {
     /// 3. `[changed_this_decision_level..]` Containes all packages that **have** had there assignments changed since
     ///    the last time `prioritize` has bean called. The inverse is not necessarily true, some packages in the range
     ///    did not have a change. Within this range there is no sorting.
-    package_assignments: FnvIndexMap<P, PackageAssignments<P, VS>>,
+    package_assignments: FnvIndexMap<Id<P>, PackageAssignments<P, VS>>,
     /// `prioritized_potential_packages` is primarily a HashMap from a package with no desition and a positive assignment
     /// to its `Priority`. But, it also maintains a max heap of packages by `Priority` order.
-    prioritized_potential_packages: PriorityQueue<P, Priority, BuildHasherDefault<FxHasher>>,
+    prioritized_potential_packages: PriorityQueue<Id<P>, Priority, BuildHasherDefault<FxHasher>>,
     changed_this_decision_level: usize,
 }
 
@@ -143,7 +143,7 @@ pub enum SatisfierSearch<P: Package, VS: VersionSet> {
     },
 }
 
-type SatisfiedMap<'i, P, VS> = SmallMap<&'i P, (Option<IncompId<P, VS>>, u32, DecisionLevel)>;
+type SatisfiedMap<P, VS> = SmallMap<Id<P>, (Option<IncompId<P, VS>>, u32, DecisionLevel)>;
 
 impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, Priority> {
     /// Initialize an empty PartialSolution.
@@ -158,7 +158,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     }
 
     /// Add a decision.
-    pub fn add_decision(&mut self, package: P, version: VS::V) {
+    pub fn add_decision(&mut self, package: Id<P>, version: VS::V) {
         // Check that add_decision is never used in the wrong context.
         if cfg!(debug_assertions) {
             match self.package_assignments.get_mut(&package) {
@@ -205,7 +205,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     /// Add a derivation.
     pub fn add_derivation(
         &mut self,
-        package: P,
+        package: Id<P>,
         cause: IncompId<P, VS>,
         store: &Arena<Incompatibility<P, VS>>,
     ) {
@@ -214,7 +214,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
             global_index: self.next_global_index,
             decision_level: self.current_decision_level,
             cause,
-            accumulated_intersection: store[cause].get(&package).unwrap().negate(),
+            accumulated_intersection: store[cause].get(package).unwrap().negate(),
         };
         self.next_global_index += 1;
         let pa_last_index = self.package_assignments.len().saturating_sub(1);
@@ -259,8 +259,8 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
 
     pub fn pick_highest_priority_pkg(
         &mut self,
-        prioritizer: impl Fn(&P, &VS) -> Priority,
-    ) -> Option<P> {
+        prioritizer: impl Fn(Id<P>, &VS) -> Priority,
+    ) -> Option<Id<P>> {
         let check_all = self.changed_this_decision_level
             == self.current_decision_level.0.saturating_sub(1) as usize;
         let current_decision_level = self.current_decision_level;
@@ -277,9 +277,9 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
                 check_all || pa.highest_decision_level == current_decision_level
             })
             .filter_map(|(p, pa)| pa.assignments_intersection.potential_package_filter(p))
-            .for_each(|(p, r)| {
+            .for_each(|(&p, r)| {
                 let priority = prioritizer(p, r);
-                prioritized_potential_packages.push(p.clone(), priority);
+                prioritized_potential_packages.push(p, priority);
             });
         self.changed_this_decision_level = self.package_assignments.len();
         prioritized_potential_packages.pop().map(|(p, _)| p)
@@ -288,23 +288,22 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     /// If a partial solution has, for every positive derivation,
     /// a corresponding decision that satisfies that assignment,
     /// it's a total solution and version solving has succeeded.
-    pub fn extract_solution(&self) -> SelectedDependencies<P, VS::V> {
+    pub fn extract_solution(&self) -> impl Iterator<Item = (Id<P>, VS::V)> + '_ {
         self.package_assignments
             .iter()
             .take(self.current_decision_level.0 as usize)
-            .map(|(p, pa)| match &pa.assignments_intersection {
-                AssignmentsIntersection::Decision((_, v, _)) => (p.clone(), v.clone()),
+            .map(|(&p, pa)| match &pa.assignments_intersection {
+                AssignmentsIntersection::Decision((_, v, _)) => (p, v.clone()),
                 AssignmentsIntersection::Derivations(_) => {
                     panic!("Derivations in the Decision part")
                 }
             })
-            .collect()
     }
 
     /// Backtrack the partial solution to a given decision level.
     pub fn backtrack(&mut self, decision_level: DecisionLevel) {
         self.current_decision_level = decision_level;
-        self.package_assignments.retain(|_p, pa| {
+        self.package_assignments.retain(|_, pa| {
             if pa.smallest_decision_level > decision_level {
                 // Remove all entries that have a smallest decision level higher than the backtrack target.
                 false
@@ -349,7 +348,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     /// is already in the partial solution with an incompatible version.
     pub fn add_version(
         &mut self,
-        package: P,
+        package: Id<P>,
         version: VS::V,
         new_incompatibilities: std::ops::Range<IncompId<P, VS>>,
         store: &Arena<Incompatibility<P, VS>>,
@@ -357,7 +356,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
         let exact = Term::exact(version.clone());
         let not_satisfied = |incompat: &Incompatibility<P, VS>| {
             incompat.relation(|p| {
-                if p == &package {
+                if p == package {
                     Some(&exact)
                 } else {
                     self.term_intersection_for_package(p)
@@ -385,18 +384,18 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     }
 
     /// Retrieve intersection of terms related to package.
-    pub fn term_intersection_for_package(&self, package: &P) -> Option<&Term<VS>> {
+    pub fn term_intersection_for_package(&self, package: Id<P>) -> Option<&Term<VS>> {
         self.package_assignments
-            .get(package)
+            .get(&package)
             .map(|pa| pa.assignments_intersection.term())
     }
 
     /// Figure out if the satisfier and previous satisfier are of different decision levels.
-    pub fn satisfier_search<'i>(
+    pub fn satisfier_search(
         &self,
-        incompat: &'i Incompatibility<P, VS>,
+        incompat: &Incompatibility<P, VS>,
         store: &Arena<Incompatibility<P, VS>>,
-    ) -> (&'i P, SatisfierSearch<P, VS>) {
+    ) -> (Id<P>, SatisfierSearch<P, VS>) {
         let satisfied_map = Self::find_satisfier(incompat, &self.package_assignments);
         let (&satisfier_package, &(satisfier_cause, _, satisfier_decision_level)) = satisfied_map
             .iter()
@@ -430,13 +429,13 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     /// Question: This is possible since we added a "global_index" to every dated_derivation.
     /// It would be nice if we could get rid of it, but I don't know if then it will be possible
     /// to return a coherent previous_satisfier_level.
-    fn find_satisfier<'i>(
-        incompat: &'i Incompatibility<P, VS>,
-        package_assignments: &FnvIndexMap<P, PackageAssignments<P, VS>>,
-    ) -> SatisfiedMap<'i, P, VS> {
+    fn find_satisfier(
+        incompat: &Incompatibility<P, VS>,
+        package_assignments: &FnvIndexMap<Id<P>, PackageAssignments<P, VS>>,
+    ) -> SatisfiedMap<P, VS> {
         let mut satisfied = SmallMap::Empty;
-        for (package, incompat_term) in incompat.iter() {
-            let pa = package_assignments.get(package).expect("Must exist");
+        for (&package, incompat_term) in incompat.iter() {
+            let pa = package_assignments.get(&package).expect("Must exist");
             satisfied.insert(package, pa.satisfier(package, &incompat_term.negate()));
         }
         satisfied
@@ -445,15 +444,15 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
     /// Earliest assignment in the partial solution before satisfier
     /// such that incompatibility is satisfied by the partial solution up to
     /// and including that assignment plus satisfier.
-    fn find_previous_satisfier<'i>(
+    fn find_previous_satisfier(
         incompat: &Incompatibility<P, VS>,
-        satisfier_package: &'i P,
-        mut satisfied_map: SatisfiedMap<'i, P, VS>,
-        package_assignments: &FnvIndexMap<P, PackageAssignments<P, VS>>,
+        satisfier_package: Id<P>,
+        mut satisfied_map: SatisfiedMap<P, VS>,
+        package_assignments: &FnvIndexMap<Id<P>, PackageAssignments<P, VS>>,
         store: &Arena<Incompatibility<P, VS>>,
     ) -> DecisionLevel {
         // First, let's retrieve the previous derivations and the initial accum_term.
-        let satisfier_pa = package_assignments.get(satisfier_package).unwrap();
+        let satisfier_pa = package_assignments.get(&satisfier_package).unwrap();
         let (satisfier_cause, _gidx, _dl) = satisfied_map.get(&satisfier_package).unwrap();
 
         let accum_term = if let &Some(cause) = satisfier_cause {
@@ -493,7 +492,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> PartialSolution<P, VS, P
 impl<P: Package, VS: VersionSet> PackageAssignments<P, VS> {
     fn satisfier(
         &self,
-        package: &P,
+        package: Id<P>,
         start_term: &Term<VS>,
     ) -> (Option<IncompId<P, VS>>, u32, DecisionLevel) {
         let empty = Term::empty();
@@ -543,8 +542,8 @@ impl<VS: VersionSet> AssignmentsIntersection<VS> {
     /// in the partial solution.
     fn potential_package_filter<'a, P: Package>(
         &'a self,
-        package: &'a P,
-    ) -> Option<(&'a P, &'a VS)> {
+        package: &'a Id<P>,
+    ) -> Option<(&'a Id<P>, &'a VS)> {
         match self {
             Self::Decision(_) => None,
             Self::Derivations(term_intersection) => {

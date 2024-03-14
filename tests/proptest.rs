@@ -106,6 +106,7 @@ impl<P: Package, VS: VersionSet, DP: DependencyProvider<P, VS>> DependencyProvid
     type Err = DP::Err;
 }
 
+#[allow(clippy::type_complexity)]
 fn timeout_resolve<P: Package, VS: VersionSet, DP: DependencyProvider<P, VS>>(
     dependency_provider: DP,
     name: P,
@@ -193,6 +194,7 @@ pub fn registry_strategy<N: Package + Ord>(
     )
         .prop_map(
             move |(crate_vers_by_name, raw_dependencies, reverse_alphabetical, complicated_len)| {
+                #[allow(clippy::type_complexity)]
                 let mut list_of_pkgid: Vec<((N, NumberVersion), Vec<(N, NumVS)>)> =
                     crate_vers_by_name
                         .iter()
@@ -549,7 +551,7 @@ proptest! {
                     // that was not selected should not change that.
                     let smaller_dependency_provider = retain_versions(&dependency_provider, |n, v| {
                             used.get(n) == Some(v) // it was used
-                            || to_remove.get(&(*n, *v)).is_none() // or it is not one to be removed
+                            || !to_remove.contains(&(*n, *v)) // or it is not one to be removed
                         });
                     prop_assert!(
                         timeout_resolve(smaller_dependency_provider.clone(), name, ver).is_ok(),
@@ -563,7 +565,7 @@ proptest! {
                     // If resolution was unsuccessful, then it should stay unsuccessful
                     // even if any version of a crate is unpublished.
                     let smaller_dependency_provider = retain_versions(&dependency_provider, |n, v| {
-                        to_remove.get(&(*n, *v)).is_some() // it is one to be removed
+                        to_remove.contains(&(*n, *v)) // it is one to be removed
                     });
                     prop_assert!(
                         timeout_resolve(smaller_dependency_provider.clone(), name, ver).is_err(),
@@ -603,7 +605,7 @@ fn large_case() {
             let mut sat = SatResolve::new(&dependency_provider);
             for p in dependency_provider.packages() {
                 for v in dependency_provider.versions(p).unwrap() {
-                    let res = resolve(&dependency_provider, *p, v);
+                    let res = resolve(&dependency_provider, p, v);
                     sat.check_resolve(&res, p, v);
                 }
             }

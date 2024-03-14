@@ -103,8 +103,10 @@
 //!         &self,
 //!         package: &String,
 //!         version: &SemanticVersion,
-//!     ) -> Result<Dependencies<String, SemVS>, Infallible> {
-//!         unimplemented!()
+//!     ) -> Result<Dependencies<impl IntoIterator<Item = (String, SemVS)> + Clone>, Infallible> {
+//!     {
+//!         unimplemented!();
+//!         Ok(Dependencies::Known([]))
 //!     }
 //!
 //!     type Err = Infallible;

@@ -108,10 +108,10 @@ impl<P: Package, VS: VersionSet> Incompatibility<P, VS> {
     }
 
     /// Build an incompatibility from a given dependency.
-    pub fn from_dependency(package: P, versions: VS, dep: (&P, &VS)) -> Self {
+    pub fn from_dependency(package: P, versions: VS, dep: (P, VS)) -> Self {
         let (p2, set2) = dep;
         Self {
-            package_terms: if set2 == &VS::empty() {
+            package_terms: if set2 == VS::empty() {
                 SmallMap::One([(package.clone(), Term::Positive(versions.clone()))])
             } else {
                 SmallMap::Two([
@@ -161,7 +161,7 @@ impl<P: Package, VS: VersionSet> Incompatibility<P, VS> {
                 .unwrap()
                 .unwrap_positive()
                 .union(other.get(p1).unwrap().unwrap_positive()), // It is safe to `simplify` here
-            (&p2, dep_term.map_or(&VS::empty(), |v| v.unwrap_negative())),
+            (p2.clone(), dep_term.map_or(VS::empty(), |v| v.unwrap_negative().clone())),
         ));
     }
 

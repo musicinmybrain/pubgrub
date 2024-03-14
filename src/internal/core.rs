@@ -16,7 +16,7 @@ use crate::internal::partial_solution::{DecisionLevel, PartialSolution};
 use crate::internal::small_vec::SmallVec;
 use crate::package::Package;
 use crate::report::DerivationTree;
-use crate::type_aliases::{DependencyConstraints, Map, Set};
+use crate::type_aliases::{Map, Set};
 use crate::version_set::VersionSet;
 
 /// Current state of the PubGrub algorithm.
@@ -82,12 +82,12 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> State<P, VS, Priority> {
         &mut self,
         package: P,
         version: VS::V,
-        deps: &DependencyConstraints<P, VS>,
+        deps: impl IntoIterator<Item = (P, VS)>,
     ) -> std::ops::Range<IncompId<P, VS>> {
         // Create incompatibilities and allocate them in the store.
         let new_incompats_id_range =
             self.incompatibility_store
-                .alloc_iter(deps.iter().map(|dep| {
+                .alloc_iter(deps.into_iter().map(|dep| {
                     Incompatibility::from_dependency(
                         package.clone(),
                         VS::singleton(version.clone()),
@@ -214,7 +214,7 @@ impl<P: Package, VS: VersionSet, Priority: Ord + Clone> State<P, VS, Priority> {
                         let prior_cause = Incompatibility::prior_cause(
                             current_incompat_id,
                             satisfier_cause,
-                            package,
+                            &package,
                             &self.incompatibility_store,
                         );
                         log::info!("prior cause: {}", prior_cause);
